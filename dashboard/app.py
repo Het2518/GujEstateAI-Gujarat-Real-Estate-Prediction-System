@@ -16,6 +16,7 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 import streamlit as st
+from PIL import Image
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -1215,9 +1216,10 @@ def render_reports() -> None:
             if idx < len(gallery):
                 with cols[j]:
                     try:
-                        st.image(str(gallery[idx]), caption=gallery[idx].name, use_container_width=True)
-                    except Exception:
-                        st.caption(f"⚠️ Could not load: {gallery[idx].name}")
+                        img = Image.open(gallery[idx])
+                        st.image(img, caption=gallery[idx].name, use_container_width=True)
+                    except Exception as e:
+                        st.caption(f"⚠️ Could not load: {gallery[idx].name} ({e})")
 
 
 # ══════════════════════════════════════════════════════════════
