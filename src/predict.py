@@ -1,6 +1,7 @@
 """predict.py
 
 Reusable inference helpers for the Streamlit dashboard and CLI usage.
+Supports all 5 modules: duration, cost, clustering, anomaly detection.
 """
 
 from __future__ import annotations
@@ -13,9 +14,9 @@ import numpy as np
 import pandas as pd
 
 try:
-    from features import FEATURES_COST, FEATURES_DURATION, simplify_promoter
+    from features import FEATURES_COST, FEATURES_DURATION, FEATURES_CLUSTER, FEATURES_ANOMALY, simplify_promoter
 except ModuleNotFoundError:
-    from src.features import FEATURES_COST, FEATURES_DURATION, simplify_promoter
+    from src.features import FEATURES_COST, FEATURES_DURATION, FEATURES_CLUSTER, FEATURES_ANOMALY, simplify_promoter
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -27,7 +28,11 @@ def _resolve_models_dir(path: str | Path | None = None) -> Path:
 
 
 def load_models(path: str | Path | None = None) -> dict[str, Any]:
-    """Load the trained model artifacts that exist in the repository."""
+    """Load the trained model artifacts that exist in the repository.
+
+    Handles tuple-packed models (clustering and anomaly are stored as
+    ``(model, scaler)`` tuples) and unpacks them into separate keys.
+    """
 
     models_dir = _resolve_models_dir(path)
     model_files = {
@@ -40,11 +45,29 @@ def load_models(path: str | Path | None = None) -> dict[str, Any]:
 
     artifacts: dict[str, Any] = {}
     for name, file_path in model_files.items():
-        if file_path.exists():
-            artifacts[name] = joblib.load(file_path)
+        if not file_path.exists():
+            continue
+        try:
+            obj = joblib.load(file_path)
+        except Exception:
+            continue
+
+        # Unpack tuple-stored models
+        if name == "clustering" and isinstance(obj, tuple) and len(obj) == 2:
+            artifacts["clustering_km"] = obj[0]
+            artifacts["clustering_scaler"] = obj[1]
+        elif name == "anomaly" and isinstance(obj, tuple) and len(obj) == 2:
+            artifacts["anomaly_iso"] = obj[0]
+            artifacts["anomaly_scaler"] = obj[1]
+        else:
+            artifacts[name] = obj
 
     return artifacts
 
+
+# ------------------------------------------------------------------
+# Encoder helpers
+# ------------------------------------------------------------------
 
 def _encode_value(encoder, value: Any) -> int:
     value = str(value)
@@ -58,15 +81,20 @@ def _apply_encoders(frame: pd.DataFrame, encoders: dict[str, Any] | None) -> pd.
         return frame
 
     frame = frame.copy()
-    frame["projectType_enc"] = _encode_value(encoders["projectType"], frame.loc[0, "projectType"])
-    frame["distName_enc"] = _encode_value(encoders["distName"], frame.loc[0, "distName"])
-    frame["promoter_type_simple_enc"] = _encode_value(
-        encoders["promoter_type_simple"], frame.loc[0, "promoter_type_simple"]
-    )
+    for col_name in ("projectType", "distName", "promoter_type_simple"):
+        enc_col = f"{col_name}_enc"
+        if col_name in encoders and col_name in frame.columns:
+            frame[enc_col] = _encode_value(encoders[col_name], frame.loc[0, col_name])
     return frame
 
 
+# ------------------------------------------------------------------
+# Feature engineering from a user payload
+# ------------------------------------------------------------------
+
 def _feature_payload_values(payload: dict[str, Any]) -> dict[str, Any]:
+    """Convert a raw user payload dict into all possible feature values."""
+
     total_units = max(int(payload.get("totalUnits", 1) or 1), 1)
     total_estimated_cost = float(payload.get("totalEstimatedCost", 0) or 0)
     total_land_cost = float(payload.get("totalLandCost", 0) or 0)
@@ -107,6 +135,7 @@ def _feature_payload_values(payload: dict[str, Any]) -> dict[str, Any]:
         "is_redevelop": 1 if str(payload.get("underRedevelopment", "NO")).upper() == "YES" else 0,
         "startProjectYear": start_year,
         "start_month": start_month,
+        "startProjectMonth": start_month,
         "start_quarter": start_quarter,
         "duration_months": duration_months,
         "dist_avg_duration": float(payload.get("dist_avg_duration", duration_months) or duration_months),
@@ -121,18 +150,25 @@ def _feature_payload_values(payload: dict[str, Any]) -> dict[str, Any]:
         "type_median_cost": float(payload.get("type_median_cost", total_estimated_cost) or total_estimated_cost),
         "year_avg_duration": float(payload.get("year_avg_duration", duration_months) or duration_months),
         "year_project_count": float(payload.get("year_project_count", 0) or 0),
+        # Raw categorical values (used for encoding, not as model features)
         "projectType": payload.get("projectType", "Residential/Group Housing"),
         "distName": payload.get("distName", "Ahmedabad"),
         "promoter_type_simple": payload.get(
             "promoter_type_simple",
             simplify_promoter(payload.get("promoterType", "Partnership")),
         ),
+        # Anomaly-specific features
+        "totalEstimatedCost": total_estimated_cost,
+        "totalLandCost": total_land_cost,
+        "totalDevelopCost": total_develop_cost,
     }
 
     return feature_values
 
 
 def _build_feature_frame(payload: dict[str, Any], feature_names: list[str], encoders: dict[str, Any] | None) -> pd.DataFrame:
+    """Build a single-row DataFrame with the exact features a model expects."""
+
     values = _feature_payload_values(payload)
     frame = pd.DataFrame([{name: values.get(name, 0.0) for name in feature_names}])
     frame = _apply_encoders(frame.assign(
@@ -148,23 +184,9 @@ def _build_feature_frame(payload: dict[str, Any], feature_names: list[str], enco
     return frame[feature_names]
 
 
-def build_duration_features(payload: dict[str, Any], encoders: dict[str, Any] | None = None) -> pd.DataFrame:
-    """Build a single-row feature frame for the duration model."""
-
-    models = load_models()
-    duration_model = models.get("duration")
-    feature_names = list(getattr(duration_model, "feature_names_in_", FEATURES_DURATION))
-    return _build_feature_frame(payload, feature_names, encoders)
-
-
-def build_cost_features(payload: dict[str, Any], encoders: dict[str, Any] | None = None) -> pd.DataFrame:
-    """Build a single-row feature frame for the cost model."""
-
-    models = load_models()
-    cost_model = models.get("cost")
-    feature_names = list(getattr(cost_model, "feature_names_in_", FEATURES_COST))
-    return _build_feature_frame(payload, feature_names, encoders)
-
+# ------------------------------------------------------------------
+# Individual predictors
+# ------------------------------------------------------------------
 
 def predict_duration(payload: dict[str, Any], models: dict[str, Any] | None = None) -> float | None:
     """Predict project duration in months when the duration model is available."""
@@ -174,9 +196,14 @@ def predict_duration(payload: dict[str, Any], models: dict[str, Any] | None = No
     if model is None:
         return None
 
-    encoders = models.get("encoders")
-    features = build_duration_features(payload, encoders)
-    return float(model.predict(features)[0])
+    try:
+        encoders = models.get("encoders")
+        feature_names = list(getattr(model, "feature_names_in_", FEATURES_DURATION))
+        features = _build_feature_frame(payload, feature_names, encoders)
+        prediction = float(model.predict(features)[0])
+        return max(prediction, 0.0)  # duration cannot be negative
+    except Exception:
+        return None
 
 
 def predict_cost(payload: dict[str, Any], models: dict[str, Any] | None = None) -> float | None:
@@ -187,23 +214,161 @@ def predict_cost(payload: dict[str, Any], models: dict[str, Any] | None = None) 
     if model is None:
         return None
 
-    encoders = models.get("encoders")
-    features = build_cost_features(payload, encoders)
-    return float(model.predict(features)[0])
+    try:
+        encoders = models.get("encoders")
+        feature_names = list(getattr(model, "feature_names_in_", FEATURES_COST))
+        features = _build_feature_frame(payload, feature_names, encoders)
+        prediction = float(model.predict(features)[0])
+        # The cost model is a Ridge regression trained on log1p(cost)
+        actual_cost = np.expm1(prediction)
+        return max(actual_cost, 0.0)  # cost cannot be negative
+    except Exception:
+        return None
 
 
-def predict_bundle(payload: dict[str, Any], models: dict[str, Any] | None = None) -> dict[str, float | None]:
-    """Predict duration and cost in one call for dashboard use."""
+def predict_cluster(payload: dict[str, Any], models: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Predict which cluster a project belongs to."""
 
     models = models or load_models()
+    km = models.get("clustering_km")
+    scaler = models.get("clustering_scaler")
+    if km is None or scaler is None:
+        return None
+
+    try:
+        encoders = models.get("encoders")
+        values = _feature_payload_values(payload)
+
+        # Use the scaler's actual feature names (authoritative source)
+        feature_names = list(getattr(scaler, "feature_names_in_", FEATURES_CLUSTER))
+
+        # Build a single-row frame with the exact features
+        row_data = {}
+        for feat in feature_names:
+            row_data[feat] = values.get(feat, 0.0)
+
+        frame = pd.DataFrame([row_data])
+
+        # Apply encoders for encoded columns
+        if encoders:
+            frame = _apply_encoders(frame.assign(
+                projectType=values.get("projectType", "Residential/Group Housing"),
+                distName=values.get("distName", "Ahmedabad"),
+                promoter_type_simple=values.get("promoter_type_simple", "Partnership"),
+            ), encoders)
+
+        cluster_frame = frame[feature_names]
+        scaled = scaler.transform(cluster_frame)
+        cluster_id = int(km.predict(scaled)[0])
+
+        # Cluster names (from the training notebook)
+        cluster_names = {
+            0: "Mixed Development Projects",
+            1: "Mid-Range Residential",
+            2: "Plotted Development Schemes",
+            3: "Large High-Budget Residential",
+            4: "Affordable Small Residential",
+        }
+        cluster_label = cluster_names.get(cluster_id, f"Cluster {cluster_id}")
+
+        return {"cluster_id": cluster_id, "cluster_label": cluster_label}
+    except Exception:
+        return None
+
+
+def predict_anomaly(payload: dict[str, Any], models: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Predict whether a project is anomalous (risky)."""
+
+    models = models or load_models()
+    iso = models.get("anomaly_iso")
+    scaler = models.get("anomaly_scaler")
+    if iso is None or scaler is None:
+        return None
+
+    try:
+        values = _feature_payload_values(payload)
+
+        # Use the scaler's actual feature names (authoritative source)
+        feature_names = list(getattr(scaler, "feature_names_in_", FEATURES_ANOMALY))
+
+        row_data = {}
+        for feat in feature_names:
+            row_data[feat] = values.get(feat, 0.0)
+
+        frame = pd.DataFrame([row_data])
+        scaled = scaler.transform(frame)
+
+        raw_score = float(iso.score_samples(scaled)[0])
+        prediction = int(iso.predict(scaled)[0])
+        risk_flag = prediction == -1
+
+        # Normalize to 0-100 risk scale (higher = riskier)
+        # Based on data distribution: max ~ -0.35 (normal), min ~ -0.75 (anomalous)
+        calibrated_min = -0.75
+        calibrated_max = -0.35
+        risk = (calibrated_max - raw_score) / (calibrated_max - calibrated_min) * 100.0
+        risk_score = max(0.0, min(100.0, risk))
+
+        # Assign risk category
+        if risk_score >= 75:
+            risk_category = "Critical"
+        elif risk_score >= 50:
+            risk_category = "High"
+        elif risk_score >= 25:
+            risk_category = "Medium"
+        else:
+            risk_category = "Low"
+
+        return {
+            "risk_flag": risk_flag,
+            "risk_score": round(risk_score, 1),
+            "risk_category": risk_category,
+            "raw_score": round(raw_score, 4),
+        }
+    except Exception:
+        return None
+
+
+# ------------------------------------------------------------------
+# Bundle predictor — all modules at once
+# ------------------------------------------------------------------
+
+def predict_bundle(payload: dict[str, Any], models: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Predict duration, cost, cluster, and risk in one call for dashboard use."""
+
+    models = models or load_models()
+
+    # 1. Duration
     duration = predict_duration(payload, models)
 
+    # 2. Cost (use predicted duration if available)
     cost_payload = dict(payload)
     if duration is not None:
         cost_payload["duration_months"] = duration
-
     cost = predict_cost(cost_payload, models)
-    return {"duration_months": duration, "totalEstimatedCost": cost}
+
+    # 3. Cluster
+    cluster_payload = dict(payload)
+    if duration is not None:
+        cluster_payload["duration_months"] = duration
+    if cost is not None:
+        cluster_payload["totalEstimatedCost"] = cost
+    cluster_result = predict_cluster(cluster_payload, models)
+
+    # 4. Anomaly / Risk
+    anomaly_payload = dict(payload)
+    if duration is not None:
+        anomaly_payload["duration_months"] = duration
+    if cost is not None:
+        anomaly_payload["totalEstimatedCost"] = cost
+    anomaly_result = predict_anomaly(anomaly_payload, models)
+
+    return {
+        "duration_months": duration,
+        "totalEstimatedCost": cost,
+        "cluster": cluster_result,
+        "anomaly": anomaly_result,
+    }
 
 
 if __name__ == "__main__":

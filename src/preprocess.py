@@ -18,6 +18,45 @@ import numpy as np
 import os
 
 
+# =============================================================
+# District name correction map
+# =============================================================
+DISTRICT_NAME_FIXES = {
+    "AHmedabad": "Ahmedabad",
+    "RAJKOT": "Rajkot",
+    "SURAT": "Surat",
+    "VADODARA": "Vadodara",
+    "Chhota Udepur": "Chhota Udaipur",
+    "Chhota udepur": "Chhota Udaipur",
+    "Sabar Kantha": "Sabarkantha",
+    "Sabarkantha": "Sabarkantha",
+}
+
+
+def standardize_district_names(df, column="distName"):
+    """
+    Fix duplicate / misspelled district names in-place.
+
+    Steps:
+        1. Replace non-breaking spaces (\\xa0) with regular spaces
+        2. Strip leading/trailing whitespace
+        3. Apply hardcoded correction map for known misspellings
+    """
+    if column not in df.columns:
+        return df
+    df = df.copy()
+    # Fix non-breaking spaces and strip
+    df[column] = (
+        df[column]
+        .astype(str)
+        .str.replace("\xa0", " ", regex=False)
+        .str.strip()
+    )
+    # Apply correction map
+    df[column] = df[column].replace(DISTRICT_NAME_FIXES)
+    return df
+
+
 def clean_data(input_path, output_path=None):
     """
     Load raw Gujarat real estate CSV, clean it, return cleaned DataFrame.
@@ -60,6 +99,15 @@ def clean_data(input_path, output_path=None):
 
     print(f"\nStep 2 — Dropped {len(cols_to_drop)} useless columns")
     print(f"  Shape : {df.shape[0]:,} rows x {df.shape[1]} columns")
+
+    # ----------------------------------------------------------
+    # STEP 2.5 — Standardize district names
+    # ----------------------------------------------------------
+    df = standardize_district_names(df, "distName")
+    unique_before = 35  # known raw count
+    unique_after = df["distName"].nunique()
+    print(f"\nStep 2.5 — Standardized district names")
+    print(f"  Unique districts : {unique_after}")
 
     # ----------------------------------------------------------
     # STEP 3 — Drop rows with missing essential values

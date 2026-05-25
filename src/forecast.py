@@ -1,6 +1,7 @@
 """forecast.py
 
 Helpers for loading the saved forecast and score tables used by the dashboard.
+Applies district name standardization on load.
 """
 
 from __future__ import annotations
@@ -9,6 +10,27 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+try:
+    from preprocess import standardize_district_names
+except ModuleNotFoundError:
+    try:
+        from src.preprocess import standardize_district_names
+    except ModuleNotFoundError:
+        # Fallback: define inline if preprocess is not importable
+        _FIXES = {
+            "AHmedabad": "Ahmedabad", "RAJKOT": "Rajkot", "SURAT": "Surat",
+            "VADODARA": "Vadodara", "Chhota Udepur": "Chhota Udaipur",
+            "Chhota udepur": "Chhota Udaipur", "Sabar Kantha": "Sabarkantha",
+        }
+
+        def standardize_district_names(df, column="distName"):
+            if column not in df.columns:
+                return df
+            df = df.copy()
+            df[column] = df[column].astype(str).str.replace("\xa0", " ", regex=False).str.strip()
+            df[column] = df[column].replace(_FIXES)
+            return df
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -19,7 +41,18 @@ REPORTS_DIR = ROOT_DIR / "reports"
 def _safe_read_csv(path: Path) -> pd.DataFrame | None:
     if not path.exists():
         return None
-    return pd.read_csv(path)
+    try:
+        return pd.read_csv(path)
+    except Exception:
+        return None
+
+
+def _clean_district_col(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply district name standardization on any district column present."""
+    for col in ("distName", "district"):
+        if col in df.columns:
+            df = standardize_district_names(df, col)
+    return df
 
 
 def load_forecast_tables(base_dir: str | Path | None = None) -> dict[str, pd.DataFrame]:
@@ -42,6 +75,7 @@ def load_forecast_tables(base_dir: str | Path | None = None) -> dict[str, pd.Dat
     for name, path in table_paths.items():
         table = _safe_read_csv(path)
         if table is not None:
+            table = _clean_district_col(table)
             tables[name] = table
 
     return tables
@@ -62,19 +96,26 @@ def summarize_forecast_tables(tables: dict[str, pd.DataFrame]) -> dict[str, Any]
     summary: dict[str, Any] = {}
 
     if "investment_scores" in tables and not tables["investment_scores"].empty:
-        top = tables["investment_scores"].sort_values("final_score", ascending=False).iloc[0]
-        summary["top_investment_district"] = top.get("distName")
-        summary["top_investment_score"] = float(top.get("final_score", 0))
+        inv = tables["investment_scores"]
+        if "final_score" in inv.columns and "distName" in inv.columns:
+            top = inv.sort_values("final_score", ascending=False).iloc[0]
+            summary["top_investment_district"] = top.get("distName")
+            summary["top_investment_score"] = float(top.get("final_score", 0))
 
     if "risk_scores" in tables and not tables["risk_scores"].empty:
         risk = tables["risk_scores"]
-        summary["flagged_projects"] = int((risk.get("risk_flag", 0) == 1).sum())
-        summary["risk_categories"] = risk.get("risk_category", pd.Series(dtype=str)).value_counts().to_dict()
+        if "risk_flag" in risk.columns:
+            summary["flagged_projects"] = int((risk["risk_flag"] == 1).sum())
+        if "risk_category" in risk.columns:
+            summary["risk_categories"] = risk["risk_category"].value_counts().to_dict()
 
     if "annual_investment_forecast" in tables and not tables["annual_investment_forecast"].empty:
         forecast = tables["annual_investment_forecast"]
-        summary["latest_year"] = int(forecast["startProjectYear"].max())
-        summary["latest_forecast"] = float(forecast.sort_values("startProjectYear").iloc[-1]["total_investment_forecast"])
+        if "startProjectYear" in forecast.columns and "total_investment_forecast" in forecast.columns:
+            summary["latest_year"] = int(forecast["startProjectYear"].max())
+            summary["latest_forecast"] = float(
+                forecast.sort_values("startProjectYear").iloc[-1]["total_investment_forecast"]
+            )
 
     return summary
 

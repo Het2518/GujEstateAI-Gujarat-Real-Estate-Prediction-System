@@ -22,6 +22,10 @@ from sklearn.preprocessing import LabelEncoder
 
 # =============================================================
 # FEATURE SETS — used by all ML modules
+#
+# NOTE: These must match the features the saved models were
+#       trained on.  The canonical source of truth is
+#       model.feature_names_in_ for each .pkl file.
 # =============================================================
 
 FEATURES_DURATION = [
@@ -29,13 +33,35 @@ FEATURES_DURATION = [
     "distName_enc",
     "promoter_type_simple_enc",
     "totalUnits",
+    "log_units",
+    "noOfInventory",
+    "totalProjects",
     "log_cost",
-    "totalLandCost",
+    "log_land_cost",
+    "log_develop_cost",
+    "log_selling",
+    "log_carpet",
+    "log_buildup",
+    "log_sqft_build",
+    "log_cost_per_unit",
+    "cost_per_unit",
+    "avgCostPerSqFt",
+    "avgCostPerUnit",
+    "land_cost_ratio",
+    "sell_dev_ratio",
+    "booking_rate",
     "is_redevelop",
     "startProjectYear",
+    "start_month",
     "start_quarter",
-    "land_cost_ratio",
-    "avgCostPerUnit",
+    "dist_avg_duration",
+    "dist_median_duration",
+    "dist_project_count",
+    "dist_avg_cost",
+    "type_avg_duration",
+    "type_median_duration",
+    "year_avg_duration",
+    "year_project_count",
 ]
 
 FEATURES_COST = [
@@ -43,20 +69,36 @@ FEATURES_COST = [
     "distName_enc",
     "promoter_type_simple_enc",
     "totalUnits",
-    "noOfInventory",
-    "avgUnits",
-    "totalLandCost",
-    "totalCarpetArea_form3A",
-    "totalBuiltupArea_form3A",
-    "totalSquareFootBuild",
-    "AvgSquareFootBuild",
-    "booking_rate",
     "log_units",
+    "noOfInventory",
+    "totalProjects",
+    "log_land_cost",
+    "log_develop_cost",
+    "log_selling",
+    "log_carpet",
+    "log_buildup",
+    "log_sqft_build",
+    "log_cost_per_unit",
+    "cost_per_unit",
+    "avgCostPerSqFt",
+    "avgCostPerUnit",
+    "land_cost_ratio",
+    "sell_dev_ratio",
+    "booking_rate",
     "is_redevelop",
     "startProjectYear",
-    "startProjectMonth",
+    "start_month",
     "start_quarter",
     "duration_months",
+    "dist_avg_duration",
+    "dist_project_count",
+    "dist_avg_cost_feat",
+    "dist_median_cost_feat",
+    "type_avg_duration",
+    "type_avg_cost",
+    "type_median_cost",
+    "year_avg_duration",
+    "year_project_count",
 ]
 
 FEATURES_CLUSTER = [
@@ -68,6 +110,7 @@ FEATURES_CLUSTER = [
     "land_cost_ratio",
     "projectType_enc",
     "distName_enc",
+    "log_cost_per_unit",
 ]
 
 FEATURES_ANOMALY = [
@@ -79,6 +122,8 @@ FEATURES_ANOMALY = [
     "land_cost_ratio",
     "totalUnits",
     "cost_per_unit",
+    "sell_dev_ratio",
+    "totalDevelopCost",
 ]
 
 
